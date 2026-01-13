@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <string_view>
 
 namespace corosio = boost::corosio;
 namespace capy = boost::capy;
@@ -25,6 +26,31 @@ namespace capy = boost::capy;
 // Demonstrates the concise exception-based pattern using .value()
 capy::task<void>
 do_request(
+    corosio::io_stream& stream,
+    std::string_view host)
+{
+    // Build and send the HTTP request
+    std::string request =
+        "GET / HTTP/1.1\r\n"
+        "Host: " + std::string(host) + "\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    (co_await corosio::write(
+        stream, capy::const_buffer(request.data(), request.size()))).value();
+
+    // Read the entire response
+    std::string response;
+    auto [ec, n] = co_await corosio::read(stream, response);
+    // EOF is expected when server closes connection
+    if (ec && ec != capy::error::eof)
+        throw boost::system::system_error(ec);
+
+    std::cout << response << std::endl;
+}
+
+// Parent coroutine that creates and connects the socket
+capy::task<void>
+run_client(
     corosio::io_context& ioc,
     boost::urls::ipv4_address addr,
     std::uint16_t port)
@@ -35,23 +61,7 @@ do_request(
     // Connect to the server (throws on error)
     (co_await s.connect(corosio::endpoint(addr, port))).value();
 
-    // Build and send the HTTP request
-    std::string request =
-        "GET / HTTP/1.1\r\n"
-        "Host: " + addr.to_string() + "\r\n"
-        "Connection: close\r\n"
-        "\r\n";
-    (co_await corosio::write(
-        s, capy::const_buffer(request.data(), request.size()))).value();
-
-    // Read the entire response
-    std::string response;
-    auto [ec, n] = co_await corosio::read(s, response);
-    // EOF is expected when server closes connection
-    if (ec && ec != capy::error::eof)
-        throw boost::system::system_error(ec);
-
-    std::cout << response << std::endl;
+    co_await do_request(s, addr.to_string());
 }
 
 int
@@ -86,7 +96,7 @@ main(int argc, char* argv[])
     // Create I/O context and run
     corosio::io_context ioc;
     capy::async_run(ioc.get_executor())(
-        do_request(ioc, *addr_result, port));
+        run_client(ioc, *addr_result, port));
     ioc.run();
 
     return EXIT_SUCCESS;
